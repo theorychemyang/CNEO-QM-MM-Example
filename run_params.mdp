@@ -1,0 +1,72 @@
+define = -DFLEXIBLE
+
+; md-nvt.mdp - used as input into grompp to generate nma-nvt.tpr
+integrator  = md-vv    ; MD using leap-frog integrator
+dt          = 0.0005 ; 0.5 fs time-step
+nsteps      = 10   ;
+
+; Set output frequency to each step
+nstxout                  = 1 ; Coordinates to trr
+nstlog                   = 1 ; Energies to md.log
+nstenergy                = 1 ; Energies to ener.edr
+nstfout                  = 0 ; force recorded every step to trr
+nstvout                  = 1 ; velocity recorded every step to trr
+
+; Set pbd cut-offs
+pbc = xyz
+rlist               = 4 ; NB-search cut-off
+coulombtype     = cut-off ; Treatment of long range electrostatic interactions
+rcoulomb	    = 4 ; Short-range electrostatic cut-off
+rvdw		    = 4 ; Short-range Van der Waals cut-off
+
+;Temperature coupling options
+tcoupl                   = nose-hoover
+nsttcouple               = 10
+tc-grps                  = system
+tau-t                    = 0.1
+ref-t                    = 300
+nh-chain-length          = 5
+;print-nose-hoover-chain-variables = yes ; do not turn this on when using md-vv integrator
+
+; Pull code for constraint
+pull = yes
+pull-ngroups = 4
+pull-ncoords = 2
+pull-group1-name = GLAoxyC
+pull-group2-name = GLMoxyC
+pull-group3-name = GLAalphaC
+pull-group4-name = GLMalphaC
+
+pull-coord1-type = constraint
+pull-coord1-geometry = distance ; simple distance increase
+pull-coord1-groups = 1 2
+pull-coord1-dim = Y Y Y
+pull-coord1-rate = 0.0 ; not pull, just distance restraint at a reference distance bw 2 groups
+;pull-coord1-k = 800000 ; kJ mol^-1 nm^-2
+pull-coord1-start = no ; define initial COM distance > 0
+pull-coord1-init = 0.901 ;
+
+pull-coord2-type = constraint
+pull-coord2-geometry = distance ; simple distance increase
+pull-coord2-groups = 3 4
+pull-coord2-dim = Y Y Y
+pull-coord2-rate = 0.0 ; not pull, just distance restraint at a reference distance bw 2 groups
+;pull-coord2-k = 800000 ; kJ mol^-1 nm^-2
+pull-coord2-start = no ; define initial COM distance > 0
+pull-coord2-init = 0.784;
+pull-nstxout = 0
+pull-nstfout = 0
+
+Pcoupl			=  no
+
+; GENERATE VELOCITIES FOR STARTUP RUN
+gen-vel                    = yes
+gen-temp                   = 300
+
+; pyscf QMMM parameters
+qmmm-pyscf-active              = True;
+qmmm-pyscf-qmgroup             = QMAtoms ; Index group of QM atoms
+qmmm-pyscf-qmmethod            = PBE    ; Method to use
+qmmm-pyscf-qmcharge            = -1      ; Charge of QM system
+qmmm-pyscf-qmmultiplicity      = 1      ; Multiplicity of QM system
+

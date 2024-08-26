@@ -1,0 +1,18 @@
+; Include forcefield parameters
+#include "./toppar/ff_defaults_atomtypes.itp"
+#include "./toppar/ff_gla.itp"
+#include "./toppar/ff_glm.itp"
+#include "./toppar/ff_ions_I_II.itp"
+#include "./toppar/ff_tip3p_m.itp"
+; #define FLEXIBLE
+
+[ system ]
+; Name
+GLA_GLM_Na_HOH35ADroplet
+
+[ molecules ]
+; Compound        #mols
+SOL              804
+GLA              1
+GLM              1
+NA               1
