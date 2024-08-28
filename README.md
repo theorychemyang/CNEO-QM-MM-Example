@@ -56,7 +56,7 @@ Link atoms are used in our implementation to saturate the QM system when there a
     LINK_CORR_RFLAT = 1.1
 
 * Parameters related to determining the coordinates for link atoms: Option `LINK_COORD_CORR_METHOD` selects how the method. It can be either `scale` or `flat`. Both methods place link atoms along the broken covalent bonds, but the C-H bond length between the QM carbon atoms and the link atoms are determined differently:
-** In `scale` methods, the C-H link bond length is `LINK_CORR_SCALE` multiplies the broken bond's length
+..* In `scale` methods, the C-H link bond length is `LINK_CORR_SCALE` multiplies the broken bond's length
 ** In `flat` method, the C-H link bond length is always `LINK_CORR_RFLAT` (the unit is Å).
   
     SYSTEM_CHARGE = 0
