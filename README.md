@@ -51,19 +51,24 @@ The PySCF driver can be copied from `gromacs_dir/src/gromacs/applied_forces/qmmm
 ### QM parameters related to link atoms in `pyscfdriver.py`
 Link atoms are used in our implementation to saturate the QM system when there are covalent bonds crossing the QM/MM boundary. When selecting QM atoms, it is conventional to break non-polar C-C bonds (e.g., between the α-C and β-C of an amino acide residue) to minimize effect of altering the system with the introduction of link atoms. A link atom is a hydrogon atom that is placed along the broken C-C bond, and its coordinate is solely determined by the coordinates of two atoms forming the broken bond, so no new degrees of freedom are introduced. Here are the explanations for the parameters related to link atoms in `pyscfdriver.py`:
 
+#### Parameters related to determining the coordinates for link atoms
+
     LINK_COORD_CORR_METHOD = "scale"
     LINK_CORR_SCALE = 0.7246
     LINK_CORR_RFLAT = 1.1
 
-* Parameters related to determining the coordinates for link atoms: Option `LINK_COORD_CORR_METHOD` selects how the method. It can be either `scale` or `flat`. Both methods place link atoms along the broken covalent bonds, but the C-H bond length between the QM carbon atoms and the link atoms are determined differently:
-..* In `scale` methods, the C-H link bond length is `LINK_CORR_SCALE` multiplies the broken bond's length
-** In `flat` method, the C-H link bond length is always `LINK_CORR_RFLAT` (the unit is Å).
-  
+* Option `LINK_COORD_CORR_METHOD` selects method to determine link atoms' coordinates. It can be either `scale` or `flat`. Both methods place link atoms along the broken covalent bonds, but the C-H bond length between the QM carbon atoms and the link atoms are determined differently.
+* In `scale` method, the C-H link bond length is `LINK_CORR_SCALE` multiplies the broken bond's length.
+* In `flat` method, the C-H link bond length is always `LINK_CORR_RFLAT` (the unit is Å).
+
+#### Parameters related to corrections made to MM charges 
+
+    LINK_CHARGE_CORR_METHOD = "dist"
     SYSTEM_CHARGE = 0
     LINK_MMHOST_NEIGHBOR_RANGE = 1.7
-    LINK_CHARGE_CORR_METHOD = "dist"
 
-* Parameters related to 
+* Option `LINK_CHARGE_CORR_METHOD` determines how MM charges are modified before QM/MM calculation. The user can choose from `global`, `local`, and `delete`. 
+* The `global` method spreads the residue 
 
 ## References
 
