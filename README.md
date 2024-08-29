@@ -63,12 +63,19 @@ Link atoms are used in our implementation to saturate the QM system when there a
 
 #### Parameters related to corrections made to MM charges 
 
-    LINK_CHARGE_CORR_METHOD = "dist"
+    LINK_CHARGE_CORR_METHOD = "global"
     SYSTEM_CHARGE = 0
     LINK_MMHOST_NEIGHBOR_RANGE = 1.7
 
 * Option `LINK_CHARGE_CORR_METHOD` determines how MM charges are modified before QM/MM calculation. The user can choose from `global`, `local`, and `delete`. 
-* The `global` method spreads the residue 
+* In the `global` method, the residue charge is spread over the MM atoms that do not form a crossing covalent bond with QM atoms. The residue charge is calculated by adding the classical charge of the QM atoms and MM atoms froming crossing covalent bonds, and then subtracting the `QM_CHARGE`. The charge of QM atoms is itself calculated by subtracting the sum of MM charges from the `SYSTEM_CHARGE`, so this parameter needs to be set correctly.
+* In the `local` method, the charges of MM atoms forming crossing bonds will be spread to the neighbor MM atoms for each of them. The distance cut-off to search for neighbors for a MM atom forming crossing bond is set by `LINK_MMHOST_NEIGHBOR_RANGE` (unit is in Å).
+* The `delete` method simply deletes the charges of the MM atoms forming crossing bonds.
+
+ #### Additional notes about link atoms
+ * In GROMACS, all bonds consisting of 2 QM atoms, angles and settles containing 2 or 3 QM atoms, and dihedrals containing 3 or 4 QM atoms, are all excluded from the forcefield evaluation.
+ * The force on a link atoms is partitioned to the two atoms of the crossing bond.
+
 
 ## References
 
