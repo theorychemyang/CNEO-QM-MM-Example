@@ -45,11 +45,12 @@ The PySCF driver can be copied from `gromacs_dir/src/gromacs/applied_forces/qmmm
 * The charge and multiplicity of the QM system are set with the global variables `QM_CHARGE` and `QM_MULT`, respectively. 
 * `QM_E_BASIS` selects the electronic basis set, and `DFT_E_XC` selects the electronic exchange-correlation functional. 
 * `DFT_DF` controls whether density fitting is to be used for electrons, and `QM_E_BASIS_AUX` sets the auxillary basis if density fitting is enabled.
-* For CNEO calculation, `QM_NUC_BASIS` selects protonic basis set. `MM_CHARGE_MODEL` determines whether point-charge model (`point`) or a Gaussian-smeared charge model (`Gauss`) will be used for MM charges. 
+* For CNEO calculation, `QM_NUC_BASIS` selects protonic basis set.
+* `MM_CHARGE_MODEL` determines whether point-charge model (`point`) or a Gaussian-smeared charge model (`gauss`) will be used for MM charges. 
 * `QMMM_CUT` determines the range within which from QM region MM charges are to be included in the QM/MM calculation, the unit of this range is Å. In this example, the MM charges within 10 Å from any QM atom will be included in the QM/MM calculation.
 
 ### QM parameters related to link atoms in `pyscfdriver.py`
-Link atoms are used in our implementation to saturate the QM system when there are covalent bonds crossing the QM/MM boundary. When selecting QM atoms, it is conventional to break non-polar C-C bonds (e.g., between the α-C and β-C of an amino acide residue) to minimize effect of altering the system with the introduction of link atoms. A link atom is a hydrogon atom that is placed along the broken C-C bond, and its coordinate is solely determined by the coordinates of two atoms forming the broken bond, so no new degrees of freedom are introduced. Here are the explanations for the parameters related to link atoms in `pyscfdriver.py`:
+Link atoms are used in our implementation to saturate the QM system when there are covalent bonds crossing the QM/MM boundary. When selecting QM atoms, it is preferable to break non-polar C-C bonds (e.g., between the α-C and β-C of an amino acide residue) to minimize the effect of altering the system with the introduction of link atoms. A link atom is a hydrogon atom that is placed along the broken C-C bond, and its coordinate is solely determined by the coordinates of two atoms forming the broken bond, so no new degrees of freedom are introduced. Here are the explanations for the parameters related to link atoms in `pyscfdriver.py`:
 
 #### Parameters related to determining the coordinates for link atoms
 
@@ -57,9 +58,9 @@ Link atoms are used in our implementation to saturate the QM system when there a
     LINK_CORR_SCALE = 0.7246
     LINK_CORR_RFLAT = 1.1
 
-* Option `LINK_COORD_CORR_METHOD` selects method to determine link atoms' coordinates. It can be either `scale` or `flat`. Both methods place link atoms along the broken covalent bonds, but the C-H bond length between the QM carbon atoms and the link atoms are determined differently.
-* In `scale` method, the C-H link bond length is `LINK_CORR_SCALE` multiplies the broken bond's length.
-* In `flat` method, the C-H link bond length is always `LINK_CORR_RFLAT` (the unit is Å).
+* Option `LINK_COORD_CORR_METHOD` selects how link atoms' coordinates are determined. It can be either `scale` or `flat`. Both methods place link atoms along the broken covalent bonds, but the C-H bond length between the QM carbon atoms and the link atoms are determined differently.
+* In `scale` method, the C-H link bond length is `LINK_CORR_SCALE` multiplies the broken bond's length. [^4]
+* In `flat` method, the C-H link bond length is always `LINK_CORR_RFLAT` (the unit is Å). [^5]
 
 #### Parameters related to corrections made to MM charges 
 
@@ -68,19 +69,21 @@ Link atoms are used in our implementation to saturate the QM system when there a
     LINK_MMHOST_NEIGHBOR_RANGE = 1.7
 
 * Option `LINK_CHARGE_CORR_METHOD` determines how MM charges are modified before QM/MM calculation. The user can choose from `global`, `local`, and `delete`. 
-* In the `global` method, the residue charge is spread over the MM atoms that do not form a crossing covalent bond with QM atoms. The residue charge is calculated by adding the classical charge of the QM atoms and MM atoms froming crossing covalent bonds, and then subtracting the `QM_CHARGE`. The charge of QM atoms is itself calculated by subtracting the sum of MM charges from the `SYSTEM_CHARGE`, so this parameter needs to be set correctly.
-* In the `local` method, the charges of MM atoms forming crossing bonds will be spread to the neighbor MM atoms for each of them. The distance cut-off to search for neighbors for a MM atom forming crossing bond is set by `LINK_MMHOST_NEIGHBOR_RANGE` (unit is in Å).
+* In the `global` method, the residue charge is spread over the MM atoms that do not form a crossing covalent bond with QM atoms. The residue charge is calculated by adding the classical charge of the QM atoms and MM atoms froming crossing covalent bonds, and then subtracting the `QM_CHARGE`. The charge of QM atoms is itself calculated by subtracting the sum of MM charges from the `SYSTEM_CHARGE`, so this parameter needs to be set correctly. [^5]
+* In the `local` method, the charges of MM atoms forming crossing bonds will be spread to the neighbor MM atoms for each of them. The distance cut-off to search for neighbors for a MM atom forming crossing bond is set by `LINK_MMHOST_NEIGHBOR_RANGE` (unit is in Å). [^6]
 * The `delete` method simply deletes the charges of the MM atoms forming crossing bonds.
 
  #### Additional notes about link atoms
  * In GROMACS, all bonds consisting of 2 QM atoms, angles and settles containing 2 or 3 QM atoms, and dihedrals containing 3 or 4 QM atoms, are all excluded from the forcefield evaluation.
- * The force on a link atoms is partitioned to the two atoms of the crossing bond.
+ * The force on a link atoms is partitioned to the two atoms of the crossing bond. [^4][^6]
 
 
 ## References
 
 [^1] Riccardi, D.; Li, G.; Cui, Q. Importance of van Der Waals Interactions in QM/MM Simulations. J. Phys. Chem. B 2004, 108 (20), 6467–6478. https://doi.org/10.1021/jp037992q.
-
 [^2] Dohn, A. O. Multiscale Electrostatic Embedding Simulations for Modeling Structure and Dynamics of Molecules in Solution: A Tutorial Review. International Journal of Quantum Chemistry 2020, 120 (21), e26343. https://doi.org/10.1002/qua.26343.
-
 [^3] Freindorf, M.; Shao, Y.; Furlani, T. R.; Kong, J. Lennard–Jones Parameters for the Combined QM/MM Method Using the B3LYP/6-31G*/AMBER Potential. Journal of Computational Chemistry 2005, 26 (12), 1270–1278. https://doi.org/10.1002/jcc.20264.
+[^4] Eichinger, M.; Tavan, P.; Hutter, J.; Parrinello, M. A Hybrid Method for Solutes in Complex Solvents: Density Functional Theory Combined with Empirical Force Fields. The Journal of Chemical Physics 1999, 110 (21), 10452–10467. https://doi.org/10.1063/1.479049.
+[^5] [Amber Reference Manual (Chapter 10).](https://ambermd.org/doc12/Amber24.pdf) .
+[^6] Sherwood, P. Hybrid Quantum Mechanics/Molecular Mechanics Approaches. In Modern Methods and Algorithms of Quantum Chemistry Proceedings; NIC series; John von Neumann Institute for Computing: Jülich, 2000; pp 285–305.
+
