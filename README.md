@@ -80,10 +80,15 @@ Link atoms are used in our implementation to saturate the QM system when there a
 
 ## References
 
-[^1] Riccardi, D.; Li, G.; Cui, Q. Importance of van Der Waals Interactions in QM/MM Simulations. J. Phys. Chem. B 2004, 108 (20), 6467–6478. https://doi.org/10.1021/jp037992q.
-[^2] Dohn, A. O. Multiscale Electrostatic Embedding Simulations for Modeling Structure and Dynamics of Molecules in Solution: A Tutorial Review. International Journal of Quantum Chemistry 2020, 120 (21), e26343. https://doi.org/10.1002/qua.26343.
-[^3] Freindorf, M.; Shao, Y.; Furlani, T. R.; Kong, J. Lennard–Jones Parameters for the Combined QM/MM Method Using the B3LYP/6-31G*/AMBER Potential. Journal of Computational Chemistry 2005, 26 (12), 1270–1278. https://doi.org/10.1002/jcc.20264.
-[^4] Eichinger, M.; Tavan, P.; Hutter, J.; Parrinello, M. A Hybrid Method for Solutes in Complex Solvents: Density Functional Theory Combined with Empirical Force Fields. The Journal of Chemical Physics 1999, 110 (21), 10452–10467. https://doi.org/10.1063/1.479049.
-[^5] [Amber Reference Manual (Chapter 10).](https://ambermd.org/doc12/Amber24.pdf) .
-[^6] Sherwood, P. Hybrid Quantum Mechanics/Molecular Mechanics Approaches. In Modern Methods and Algorithms of Quantum Chemistry Proceedings; NIC series; John von Neumann Institute for Computing: Jülich, 2000; pp 285–305.
+[^1] [Riccardi, D.; Li, G.; Cui, Q. Importance of van Der Waals Interactions in QM/MM Simulations. J. Phys. Chem. B 2004, 108 (20), 6467–6478.](https://doi.org/10.1021/jp037992q)
+
+[^2] [Dohn, A. O. Multiscale Electrostatic Embedding Simulations for Modeling Structure and Dynamics of Molecules in Solution: A Tutorial Review. International Journal of Quantum Chemistry 2020, 120 (21), e26343.](https://doi.org/10.1002/qua.26343)
+
+[^3] [Freindorf, M.; Shao, Y.; Furlani, T. R.; Kong, J. Lennard–Jones Parameters for the Combined QM/MM Method Using the B3LYP/6-31G*/AMBER Potential. Journal of Computational Chemistry 2005, 26 (12), 1270–1278.](https://doi.org/10.1002/jcc.20264)
+
+[^4] [Eichinger, M.; Tavan, P.; Hutter, J.; Parrinello, M. A Hybrid Method for Solutes in Complex Solvents: Density Functional Theory Combined with Empirical Force Fields. The Journal of Chemical Physics 1999, 110 (21), 10452–10467.](https://doi.org/10.1063/1.479049)
+
+[^5] [Amber Reference Manual (Chapter 10).](https://ambermd.org/doc12/Amber24.pdf)
+
+[^6] Sherwood, P. Hybrid Quantum Mechanics/Molecular Mechanics Approaches. In Modern Methods and Algorithms of Quantum Chemistry Proceedings; NIC series; John von Neumann Institute for Computing: Jülich, 2000; pp 285–305
 
