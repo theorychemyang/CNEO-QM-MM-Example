@@ -55,7 +55,7 @@ Two parameters are used to select quantum nuclei in CNEO calculations
     QM_NUC_SELECT = 'custom'
     QM_NUC_INDEX = [10, 15, 18]
 
-`QM_NUC_SELECT` can be eiter `all` or `custom`. In the `all` mode, all hydrogen nuclei except for link atoms (see below) are quantized. In the `custom` mode, the user selects quantum nuclei through option `QM_NUC_INDEX`. It needs attention to create the `QM_NUC_INDEX` as PySCF creates its own index for atoms, `QM_NUC_INDEX` uses this index, not the atom index in GROMACS.
+`QM_NUC_SELECT` can be eiter `all` or `custom`. In the `all` mode, all hydrogen nuclei except for link atoms (see below) are quantized. In the `custom` mode, the user selects quantum nuclei through option `QM_NUC_INDEX`. It needs attention to create the `QM_NUC_INDEX` as PySCF creates its own index for atoms. `QM_NUC_INDEX` uses this index, not the index in GROMACS.
 
 ### QM parameters related to link atoms in `pyscfdriver.py`
 Link atoms are used in our implementation to saturate the QM system when there are covalent bonds crossing the QM/MM boundary. When selecting QM atoms, it is preferable to break non-polar C-C bonds (e.g., between the α-C and β-C of an amino acide residue) to minimize the effect of altering the system with the introduction of link atoms. A link atom is a hydrogon atom that is placed along the broken C-C bond, and its coordinate is solely determined by the coordinates of two atoms forming the broken bond, so no new degrees of freedom are introduced. Here are the explanations for the parameters related to link atoms in `pyscfdriver.py`:
