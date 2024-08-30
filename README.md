@@ -52,7 +52,7 @@ The PySCF driver can be copied from `gromacs_dir/src/gromacs/applied_forces/qmmm
 #### Select quantum nuclei in CNEO calculations
 Two parameters are used to select quantum nuclei in CNEO calculations
 
-    QM_NUC_SELECT = 'custom' # select from {'all', 'custom'}
+    QM_NUC_SELECT = 'custom'
     QM_NUC_INDEX = [10, 15, 18]
 
 `QM_NUC_SELECT` can be eiter `all` or `custom`. In the `all` mode, all hydrogen nuclei except for link atoms (see below) are quantized. In the `custom` mode, the user selects quantum nuclei through option `QM_NUC_INDEX`. It needs attention to create the `QM_NUC_INDEX` as PySCF creates its own index for atoms, `QM_NUC_INDEX` uses this index, not the atom index in GROMACS.
