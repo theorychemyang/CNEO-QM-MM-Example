@@ -1,0 +1,4 @@
+UNITS LENGTH=nm TIME=ps ENERGY=kj/mol
+doxyCoxyC: DISTANCE ATOMS=2414,2433
+restraint: RESTRAINT ARG=doxyCoxyC AT=0.9 KAPPA=30000
+PRINT ARG=doxyCoxyC,restraint.bias STRIDE=3 FILE=colvar_0.9.dat
