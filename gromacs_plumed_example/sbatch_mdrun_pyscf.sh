@@ -5,9 +5,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem-per-cpu=4000
-#SBATCH --job-name=gHg
-#SBATCH --mail-user=<xzhao287@wisc.edu>
-#SBATCH --mail-type=FAIL,END
+#SBATCH --job-name=gHg_gromacs_plumed_test
 
 module load gcc cmake openmpi
 export LD_LIBRARY_PATH=$OPENMPI_ROOT/lib:$LD_LIBRARY_PATH
@@ -17,10 +15,7 @@ export OMP_NUM_THREADS=16
 export OMP_STACKSIZE=256M
 export PYSCF_MAX_MEMORY=64000
 
-# fnms='r_1.40  r_1.55  r_1.65  r_1.75  r_1.85  r_2.00  r_2.15  r_2.25'
-# fnms='r_2.35  r_2.45  r_2.55  r_2.65  r_2.75  r_2.85  r_2.95  r_3.05  r_3.15'
 fnms='gHg'
-# fnms='r_2.50  r_2.60  r_2.70  r_2.80  r_2.90  r_3.00  r_3.10  r_3.20'
 
 # Check if SLURM_JOB_ID is set
 if [ -z "$SLURM_JOB_ID" ]; then
@@ -55,7 +50,6 @@ run_gromacs() {
     echo   'Synonym for SLURM_NTASKS                             : '  $SLURM_NPROCS              >> $outfile
     sed -n '10,39p;40q' pyscfdriver.py  >> $outfile
     srun --exclusive -N 1 -n 1 -c 16 bash -c "mkdir -p $tmp_dir && ~/github/gromacs/build/bin/gmx_d mdrun -plumed plumed_params.dat -deffnm $fnm " >> $outfile 2>&1
-                                    #  -plumed ../plumed/plumed_$fnm.dat >> $outfile 2>&1
 
 }
 

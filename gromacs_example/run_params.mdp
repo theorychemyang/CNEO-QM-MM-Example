@@ -3,7 +3,7 @@ define = -DFLEXIBLE
 ; md-nvt.mdp - used as input into grompp to generate nma-nvt.tpr
 integrator  = md-vv    ; MD using leap-frog integrator
 dt          = 0.0005 ; 0.5 fs time-step
-nsteps      = 10   ;
+nsteps      = 100   ;
 
 ; Set output frequency to each step
 nstxout                  = 1 ; Coordinates to trr

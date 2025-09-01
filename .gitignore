@@ -1,0 +1,6 @@
+slurm*
+gHg*
+__pycache__/
+pyscfdriver_init*
+colvar*
+mdout*

@@ -1,4 +1,4 @@
-import numpy
+import numpy as np
 import time, copy, os, warnings
 import psutil
 try:
@@ -10,6 +10,7 @@ from pyscf import lib, gto, scf, grad, dft, neo, lo
 from pyscf.qmmm import itrf
 from pyscf.data import elements, radii, nist
 from pyscf.qmmm.mm_mole import create_mm_mol
+from collections import defaultdict
 import dftbplus
 
 # DEBUG = True
@@ -28,7 +29,8 @@ DFT_DF = True
 DFT_DF_NE = False
 QM_E_BASIS_AUX = 'aug-cc-pvdz-ri'
 MM_CHARGE_MODEL = 'point' # select from {'point', 'gaussian'}
-QMMM_CUT = 10 # Angstrom
+QMMM_CUT = 5 # Angstrom
+QMMM_SWITCH = 3
 
 LINK_CHARGE_CORR_METHOD = 'global' # select from {'global', 'local', 'delete'}
 LINK_MMHOST_NEIGHBOR_RANGE = 1.7
@@ -149,15 +151,41 @@ def qmmmCalc(
             mmkinds=mmkinds,
             mmneighbor_thrsh=LINK_MMHOST_NEIGHBOR_RANGE)
 
-    mmindex_incut = numpy.array([], dtype=int)
-    for qmcoord in qmcoords:
-        cut_ind = numpy.flatnonzero(lib.norm(qmcoord - numpy.array(mmcoords), axis=1) <= QMMM_CUT)
-        # print(f'{cut_ind=}')
-        mmindex_incut = numpy.unique(numpy.concatenate((mmindex_incut, cut_ind)))
+    mmindex_incut = np.array([], dtype=int)
+    mmdist = defaultdict(list)
+    # mmdist = set()
+    for qmindex_, qmkind, qmcoord in zip(qmindex, qmkinds, qmcoords):
+        # print(f"{qmindex_=} {qmkind=} {qmcoord=}")
+        for mmindex_, mmcoord in enumerate(mmcoords):
+            # print(f"{mmindex_=} {mmcoord=}")
+            dist = lib.norm(qmcoord - np.array(mmcoord))
+            if dist <= QMMM_CUT:
+                switch_factor = switch(dist, QMMM_SWITCH, QMMM_CUT)
+                charge_switched = mmcharges[mmindex_] * switch_factor
+                # charge_old = mmdist[mmindex_][2]
+                mmkind = mmkinds[mmindex_]
+                if mmindex_ not in mmdist:
+                    mmdist[mmindex_] = [qmindex_, mmkind, dist, switch_factor, charge_switched]
+                elif mmdist[mmindex_][2] > dist:
+                    mmdist[mmindex_] = [qmindex_, mmkind, dist, switch_factor, charge_switched]
+    # mmindex_incut = np.array(sorted(list(set(mmdist.keys()))))
+    mmkinds_incut, mmcharges_incut, mmcoords_incut, mmindex_incut = [], [], [], []
+    for i, mmindex_ in enumerate(sorted(mmdist.keys())):
+        # print(f"{i=} {mmindex_=} {mmdist[mmindex_]=}")
+        qmindex_, mmkind, dist, switch_factor, charge_switched = mmdist[mmindex_]
+        print(f'{qmindex_=} {mmindex_=} {mmkind=} {dist:.3f} {switch_factor:.3f} old charge {mmcharges[mmindex_]:.3f} new charge {charge_switched:.3f}')
+        mmkinds_incut.append(mmkind)
+        mmcharges_incut.append(charge_switched)
+        mmcoords_incut.append(mmcoords[mmindex_])
+        mmindex_incut.append(mmindex_)
+    mmkinds_incut = np.array(mmkinds_incut)
+    mmcharges_incut = np.array(mmcharges_incut)
+    mmcoords_incut = np.array(mmcoords_incut)
+    mmindex_incut = np.array(mmindex_incut)
 
-    mmkinds_incut = numpy.array(mmkinds)[mmindex_incut]
-    mmcharges_incut = numpy.array(mmcharges)[mmindex_incut]
-    mmcoords_incut = numpy.array(mmcoords)[mmindex_incut]
+    # mmkinds_incut = np.array(mmkinds)[mmindex_incut]
+    # mmcharges_incut = np.array(mmcharges)[mmindex_incut]
+    # mmcoords_incut = np.array(mmcoords)[mmindex_incut]
 
     # MM charge model: Gaussian charge or point charge. Point
     # charge model for MM atoms is just Gaussian charge
@@ -214,8 +242,7 @@ def qmmmCalc(
         [energy, qmforces, mmforces_incut] = qmmmCalc_dftb(
             qmcoords_link, mmcoords_incut, mmcharges_incut)
 
-
-    mmforces = numpy.zeros((len(mmindex), 3))
+    mmforces = np.zeros((len(mmindex), 3))
     mmforces[mmindex_incut] = mmforces_incut
 
     # force correction, partition the force on link atoms to
@@ -418,46 +445,46 @@ def qmmmCalc_mulliken(qmatoms, mmcoords, mmcharges, mmradii):
     mf.kernel()
 
     energy = 0.000
-    qmforces = numpy.array([[0.00,0.00,0.00] for x in qmatoms])
-    mmforces = numpy.array([[0.00,0.00,0.00] for x in mmcharges])
+    qmforces = np.array([[0.00,0.00,0.00] for x in qmatoms])
+    mmforces = np.array([[0.00,0.00,0.00] for x in mmcharges])
 
     C = lo.orth_ao(mf, 'nao')
 
     # C is orthogonal wrt to the AO overlap matrix.  C^T S C  is an identity matrix.
-    print(abs(reduce(numpy.dot, (C.T, mf.get_ovlp(), C)) -
-            numpy.eye(mol.nao_nr())).max())  # should be close to 0
+    print(abs(reduce(np.dot, (C.T, mf.get_ovlp(), C)) -
+            np.eye(mol.nao_nr())).max())  # should be close to 0
 
     # The following linear equation can also be solved using the matrix
-    # multiplication reduce(numpy.dot (C.T, mf.get_ovlp(), mf.mo_coeff))
-    mo = numpy.linalg.solve(C, mf.mo_coeff)
+    # multiplication reduce(np.dot (C.T, mf.get_ovlp(), mf.mo_coeff))
+    mo = np.linalg.solve(C, mf.mo_coeff)
 
     #
     # Mulliken population analysis based on NAOs
     #
     dm = mf.make_rdm1(mo, mf.mo_occ)
-    mf.mulliken_pop(mol, dm, numpy.eye(mol.nao_nr()))
+    mf.mulliken_pop(mol, dm, np.eye(mol.nao_nr()))
 
     return energy, qmforces, mmforces
 
 def qmmmCalc_dftb(qmcoords, mmcoords, mmcharges):
-    qmcoords = numpy.array(qmcoords) / 0.529177249 # AA to Bohr
-    mmcoords = numpy.array(mmcoords) / 0.529177249 # AA to Bohr
+    qmcoords = np.array(qmcoords) / 0.529177249 # AA to Bohr
+    mmcoords = np.array(mmcoords) / 0.529177249 # AA to Bohr
     dr = mmcoords[:,None,:] - qmcoords
-    r = numpy.linalg.norm(dr, axis=2)
-    extpot = numpy.einsum('R,Rr->r', mmcharges, 1/r)
+    r = np.linalg.norm(dr, axis=2)
+    extpot = np.einsum('R,Rr->r', mmcharges, 1/r)
 
     cdftb = dftbplus.DftbPlus(libpath='path to /libdftbplus.so',
                             hsdpath='dftb_in.hsd',
                             logfile='dftb_log.log')
     cdftb.set_geometry(qmcoords, latvecs=None)
-    cdftb.set_external_potential(extpot, extpotgrad=numpy.zeros((qmcoords.shape[0], 3)))
+    cdftb.set_external_potential(extpot, extpotgrad=np.zeros((qmcoords.shape[0], 3)))
     energy = cdftb.get_energy()
     qmforces = -cdftb.get_gradients()
     qmcharges = cdftb.get_gross_charges()
     cdftb.close()
 
-    qmforces += -numpy.einsum('r,R,Rrx,Rr->rx', qmcharges, mmcharges, dr, r**-3)
-    mmforces = -numpy.einsum('r,R,Rrx,Rr->Rx', qmcharges, mmcharges, dr, r**-3)
+    qmforces += -np.einsum('r,R,Rrx,Rr->rx', qmcharges, mmcharges, dr, r**-3)
+    mmforces = -np.einsum('r,R,Rrx,Rr->Rx', qmcharges, mmcharges, dr, r**-3)
     return energy, qmforces, mmforces
 
 
@@ -521,8 +548,8 @@ def link_coord_corr(
         qmindex_link.append('L' + str(i))
         qm_group_index = qmindex.index(links[i][0])
         mm_group_index = mmindex.index(links[i][1])
-        qm_host_coord = numpy.array(qmcoords[qm_group_index])
-        mm_host_coord = numpy.array(mmcoords[mm_group_index])
+        qm_host_coord = np.array(qmcoords[qm_group_index])
+        mm_host_coord = np.array(mmcoords[mm_group_index])
         if method.lower() == 'scale':
             # In the 'scale' method, link atom is placed along the QMhost-MMhost
             # bond, and its distance to QMhost is scale0*r_mm_qm
@@ -531,14 +558,14 @@ def link_coord_corr(
             link_coord = scale0 * mm_host_coord + (1 - scale0) * qm_host_coord
             link_scale.append(scale0)
             r_mm_qm = mm_host_coord - qm_host_coord
-            d_mm_qm = numpy.linalg.norm(r_mm_qm)
+            d_mm_qm = np.linalg.norm(r_mm_qm)
         if method.lower() == 'flat':
             # In the 'flat' method, link atom is placed along the QMhost-MMhost
             # bond, and its distance to QMhost is set to be
             # a constant, for all links
             scale = 0
             r_mm_qm = mm_host_coord - qm_host_coord
-            d_mm_qm = numpy.linalg.norm(r_mm_qm)
+            d_mm_qm = np.linalg.norm(r_mm_qm)
             scale = rflat0 / d_mm_qm
             link_scale.append(scale)
             link_coord = scale * mm_host_coord + (1 - scale) * qm_host_coord
@@ -623,7 +650,7 @@ def link_force_corr(
         linkindex = 'L' + str(i)
         link_group_index = qmindex.index(linkindex)
         qmindex.remove(linkindex)
-        qmforces = numpy.delete(qmforces, link_group_index, 0)
+        qmforces = np.delete(qmforces, link_group_index, 0)
 
     if printflag:
         prop_print_xzy("qm forces corrected", qmindex, qmkinds, qmforces)
@@ -642,7 +669,7 @@ def neighborlist_gen(hostcoord, coords, index, bondthreshold=1.7, mode='radius')
         raise Exception("there is no neighbor to search for host coordinate")
     if mode.lower()[0:3] == 'rad':
         for coord in coords:
-            dist = numpy.linalg.norm(numpy.array(coord) - numpy.array(hostcoord))
+            dist = np.linalg.norm(np.array(coord) - np.array(hostcoord))
             if dist < bondthreshold and dist > 0.1:
                 index[coords.index(coord)]
                 neighbor_index.append(index[coords.index(coord)])
@@ -650,11 +677,11 @@ def neighborlist_gen(hostcoord, coords, index, bondthreshold=1.7, mode='radius')
     if mode.lower()[0:4] == 'near':
         nearest_index = index[0]
         nearest_coord = coord[nearest_index]
-        nearest_dist = numpy.linalg.norm(
-            numpy.array(nearest_coord) - numpy.array(hostcoord)
+        nearest_dist = np.linalg.norm(
+            np.array(nearest_coord) - np.array(hostcoord)
         )
         for i in range(len(coords)):
-            dist = numpy.linalg.norm(numpy.array(coords[i]) - numpy.array(hostcoord))
+            dist = np.linalg.norm(np.array(coords[i]) - np.array(hostcoord))
             if dist < nearest_dist and dist > 0.1:
                 nearest_index = index[i]
                 nearest_coord = coords[i]
@@ -736,7 +763,7 @@ def link_charge_corr(
             mmneighbor_dists = []
             mmneighbor_kinds = []
             for i in range(len(mmcoords)):
-                dist = numpy.linalg.norm(numpy.array(mmcoords[i]) - numpy.array(mmhost_coord))
+                dist = np.linalg.norm(np.array(mmcoords[i]) - np.array(mmhost_coord))
                 if dist < mmneighbor_thrsh and dist > 0.1:
                     mmneighbor_index.append(mmindex[i])
                     mmneighbor_dists.append(dist)
@@ -769,3 +796,12 @@ def link_charge_corr(
         [print(f"{mmcharges_redist[i]=}") for i in mmhostindex_group]
 
     return mmcharges_redist
+
+def switch(r, rs, rc):
+    if r < rs and r > 0:
+        return 1
+    elif r >= rs and r <= rc:
+        x = (r-rs)/(rc-rs)
+        return (x**3 * (-6*x**2 + 15*x - 10) + 1)
+    else:
+        return 0
