@@ -65,7 +65,7 @@ gen-temp                   = 300
 
 ; pyscf QMMM parameters
 qmmm-pyscf-active              = True;
-qmmm-pyscf-qmgroup             = QMAtoms ; Index group of QM atoms
+qmmm-pyscf-qmgroup             = LBHB ; Index group of QM atoms
 qmmm-pyscf-qmmethod            = PBE    ; Method to use
 qmmm-pyscf-qmcharge            = -1      ; Charge of QM system
 qmmm-pyscf-qmmultiplicity      = 1      ; Multiplicity of QM system

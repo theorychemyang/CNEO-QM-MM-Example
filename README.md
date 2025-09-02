@@ -4,9 +4,13 @@
 
 The source codes of [modified GROMACS](https://github.com/theorychemyang/gromacs) and [modified PySCF](https://github.com/theorychemyang/pyscf) can be downloaded from our GitHub repository, respectively. The procedure for installing PySCF is the same as "Build from source" method on PySCF's [official installation guide](https://pyscf.org/install.html#build-from-source). For GROMACS, the procedure is the same as the [official guide](https://manual.gromacs.org/current/install-guide/), except that when configuring GROMACS with `cmake`, the flag `-DGMX_PYSCF=ON` needs to be set.
 
+## Get PLUMED support for GROMACS that can run CNEO:
+
+We have a version of modified GROMACS v2024.3 which can be patched by [PLUMED 2.9.4](https://www.plumed.org/doc-v2.9/user-doc/html/gromacs-2024-3.html).
+
 ## Run a CNEO-QM/MM calculation with GROMACS and PySCF:
 
-The procedure of CNEO-QM/MM is similar to that of a generic QM/MM calculation using GROMACS-CP2K packages (https://github.com/bioexcel/gromacs-2022-cp2k-tutorial). The required user inputs in a working directory are: 
+The procedure of CNEO-QM/MM is similar to that of a generic QM/MM calculation using GROMACS-CP2K packages (https://github.com/bioexcel/gromacs-2022-cp2k-tutorial). The required user inputs in a working directory are:
 1. initial configuration (`.gro` file)
 2. force field parameters (`.top`, `.itp`, `.rtp` files, etc.)
 3. calculation parameters (`.mdp` file)
@@ -14,8 +18,8 @@ The procedure of CNEO-QM/MM is similar to that of a generic QM/MM calculation us
 5. a PySCF driver `pyscfdriver.py`
 
 ### Prepare the initial configuration and force field parameters
-For a certain system, the initial configuration and the force field parameters for QM/MM calculation are similar to those for pure MM calculation, but there are a few aspects that need attention. 
-* First, it is better to correctly label the atoms with `gmx editconf` command when preparing the initial configuration, because the atom indices in the initial configuration will be used to select QM atoms in the '.ndx' file later. 
+For a certain system, the initial configuration and the force field parameters for QM/MM calculation are similar to those for pure MM calculation, but there are a few aspects that need attention.
+* First, it is better to correctly label the atoms with `gmx editconf` command when preparing the initial configuration, because the atom indices in the initial configuration will be used to select QM atoms in the '.ndx' file later.
 * Second, the non-bonding parameters for hydrogen atoms on oxygen and nitrogen are often zero in common force fields, but finite values are usually necessary for QM/MM calculations.[^1][^2] It is recommended to modify these parameters [^3] to prevent the polar hydrogen atoms from being exccessively attracted by the MM point charges near the QM/MM boundary.
 * Third, it is also better to avoid imposing too many constraints on the QM system in the force field, therefore, the constraints on C-H, N-H, or O-H bonds in the QM system should be disabled in the force field.
 
@@ -41,12 +45,12 @@ The PySCF driver can be copied from `gromacs_dir/src/gromacs/applied_forces/qmmm
     MM_CHARGE_MODEL = "point"
     QMMM_CUT = 10
 
-* The methods for treating QM system is selected with `QM_METHOD`, and `CNEO` and `DFT` are available as for now. Additional methods can be added and customized by users. 
-* The charge and multiplicity of the QM system are set with the global variables `QM_CHARGE` and `QM_MULT`, respectively. 
-* `QM_E_BASIS` selects the electronic basis set, and `DFT_E_XC` selects the electronic exchange-correlation functional. 
+* The methods for treating QM system is selected with `QM_METHOD`, and `CNEO` and `DFT` are available as for now. Additional methods can be added and customized by users.
+* The charge and multiplicity of the QM system are set with the global variables `QM_CHARGE` and `QM_MULT`, respectively.
+* `QM_E_BASIS` selects the electronic basis set, and `DFT_E_XC` selects the electronic exchange-correlation functional.
 * `DFT_DF` controls whether density fitting is to be used for electrons, and `QM_E_BASIS_AUX` sets the auxillary basis if density fitting is enabled.
 * For CNEO calculation, `QM_NUC_BASIS` selects protonic basis set.
-* `MM_CHARGE_MODEL` determines whether point-charge model (`point`) or a Gaussian-smeared charge model (`gauss`) will be used for MM charges. 
+* `MM_CHARGE_MODEL` determines whether point-charge model (`point`) or a Gaussian-smeared charge model (`gauss`) will be used for MM charges.
 * `QMMM_CUT` determines the range within which from QM region MM charges are to be included in the QM/MM calculation, the unit of this range is Å. In this example, the MM charges within 10 Å from any QM atom will be included in the QM/MM calculation.
 
 #### Select quantum nuclei in CNEO calculations
@@ -71,19 +75,19 @@ Link atoms are used in our implementation to saturate the QM system when there a
 * In `scale` method, the C-H link bond length is `LINK_CORR_SCALE` multiplies the broken bond's length. [^4]
 * In `flat` method, the C-H link bond length is always `LINK_CORR_RFLAT` (the unit is Å). [^5]
 
-#### Parameters related to corrections made to MM charges 
+#### Parameters related to corrections made to MM charges
 
     LINK_CHARGE_CORR_METHOD = "global"
     SYSTEM_CHARGE = 0
     LINK_MMHOST_NEIGHBOR_RANGE = 1.7
 
-* Option `LINK_CHARGE_CORR_METHOD` determines how MM charges are modified before QM/MM calculation. The user can choose from `global`, `local`, and `delete`. 
+* Option `LINK_CHARGE_CORR_METHOD` determines how MM charges are modified before QM/MM calculation. The user can choose from `global`, `local`, and `delete`.
 * In the `global` method, the residue charge is spread over the MM atoms that do not form a crossing covalent bond with QM atoms. The residue charge is calculated by adding the classical charge of the QM atoms and MM atoms froming crossing covalent bonds, and then subtracting the `QM_CHARGE`. The charge of QM atoms is itself calculated by subtracting the sum of MM charges from the `SYSTEM_CHARGE`, so this parameter needs to be set correctly. [^5]
 * In the `local` method, the charges of MM atoms forming crossing bonds will be spread to the neighbor MM atoms for each of them. The distance cut-off to search for neighbors for a MM atom forming crossing bond is set by `LINK_MMHOST_NEIGHBOR_RANGE` (unit is in Å). [^6]
 * The `delete` method simply deletes the charges of the MM atoms forming crossing bonds.
 
  #### Additional notes about link atoms
- * In GROMACS, all bonds consisting of 2 QM atoms, angles and settles containing 2 or 3 QM atoms, and dihedrals containing 3 or 4 QM atoms, are all excluded from the forcefield evaluation.
+ * In GROMACS, all bonds consisting of 2 QM atoms, angles and settles containing 2 or 3 QM atoms, and dihedrals containing 3 or 4 QM atoms, are all excluded from the forcefield evaluation. [^7]
  * The force on a link atoms is partitioned to the two atoms of the crossing bond. [^4][^6]
 
 
@@ -101,3 +105,4 @@ Link atoms are used in our implementation to saturate the QM system when there a
 
 [^6]: Sherwood, P. Hybrid Quantum Mechanics/Molecular Mechanics Approaches. In Modern Methods and Algorithms of Quantum Chemistry Proceedings; NIC series; John von Neumann Institute for Computing: Jülich, 2000; pp 285–305
 
+[^7]: [GROMACS documentation on QM/MM] (https://manual.gromacs.org/current/reference-manual/special/qmmm.html#overview)

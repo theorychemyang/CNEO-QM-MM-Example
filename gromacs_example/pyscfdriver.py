@@ -173,7 +173,7 @@ def qmmmCalc(
     for i, mmindex_ in enumerate(sorted(mmdist.keys())):
         # print(f"{i=} {mmindex_=} {mmdist[mmindex_]=}")
         qmindex_, mmkind, dist, switch_factor, charge_switched = mmdist[mmindex_]
-        print(f'{qmindex_=} {mmindex_=} {mmkind=} {dist:.3f} {switch_factor:.3f} old charge {mmcharges[mmindex_]:.3f} new charge {charge_switched:.3f}')
+        # print(f'{qmindex_=} {mmindex_=} {mmkind=} {dist:.3f} {switch_factor:.3f} old charge {mmcharges[mmindex_]:.3f} new charge {charge_switched:.3f}')
         mmkinds_incut.append(mmkind)
         mmcharges_incut.append(charge_switched)
         mmcoords_incut.append(mmcoords[mmindex_])
