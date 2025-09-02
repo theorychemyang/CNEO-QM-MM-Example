@@ -6,7 +6,7 @@ The source codes of [modified GROMACS](https://github.com/theorychemyang/gromacs
 
 ## Get PLUMED support for GROMACS that can run CNEO:
 
-We have a version of modified GROMACS v2024.3 which can be patched by [PLUMED 2.9.4](https://www.plumed.org/doc-v2.9/user-doc/html/gromacs-2024-3.html).
+We have a version of modified GROMACS v2024.3 which can be patched by [PLUMED 2.9.4](https://www.plumed.org/doc-v2.9/user-doc/html/gromacs-2024-3.html). Presently, please [find this version here](https://github.com/xzhao287/gromacs/tree/v2024.3_cneo). The procedure is the same as [using PLUMED to patch standard release of GROMACS](https://www.plumed.org/doc-v2.9/user-doc/html/_installation.html#Patching).
 
 ## Run a CNEO-QM/MM calculation with GROMACS and PySCF:
 
