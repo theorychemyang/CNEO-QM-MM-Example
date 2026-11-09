@@ -37,13 +37,15 @@ The PySCF driver can be copied from `gromacs_dir/src/gromacs/applied_forces/qmmm
     QM_METHOD = "cneo"
     QM_CHARGE = -1
     QM_MULT = 1
-    QM_E_BASIS = "aug-cc-pvdz"
+    QM_E_BASIS = "def2-svp"
     DFT_E_XC = "B3LYP"
     DFT_DF = True
-    QM_E_BASIS_AUX = "aug-cc-pvdz-ri"
+    DFT_DF_NE = True
+    DFT_DF_NN = True
+    QM_E_BASIS_AUX = "def2-svp-jkfit"
     QM_NUC_BASIS = "pb4d"
     MM_CHARGE_MODEL = "point"
-    QMMM_CUT = 10
+    QMMM_CUT = None
 
 * The methods for treating QM system is selected with `QM_METHOD`, and `CNEO` and `DFT` are available as for now. Additional methods can be added and customized by users.
 * The charge and multiplicity of the QM system are set with the global variables `QM_CHARGE` and `QM_MULT`, respectively.
@@ -51,7 +53,8 @@ The PySCF driver can be copied from `gromacs_dir/src/gromacs/applied_forces/qmmm
 * `DFT_DF` controls whether density fitting is to be used for electrons, and `QM_E_BASIS_AUX` sets the auxillary basis if density fitting is enabled.
 * For CNEO calculation, `QM_NUC_BASIS` selects protonic basis set.
 * `MM_CHARGE_MODEL` determines whether point-charge model (`point`) or a Gaussian-smeared charge model (`gauss`) will be used for MM charges.
-* `QMMM_CUT` determines the range within which from QM region MM charges are to be included in the QM/MM calculation, the unit of this range is Å. In this example, the MM charges within 10 Å from any QM atom will be included in the QM/MM calculation.
+* `QMMM_CUT = None` includes all supplied MM charges and bypasses distance screening and switching. With a finite cutoff in Angstrom, `QMMM_SWITCH` is the distance from the nearest QM atom where charge tapering starts; charges reach zero at `QMMM_CUT`. The finite-cutoff implementation omits derivatives of the distance-dependent charge scaling from the forces, so use the no-cutoff default for MD.
+* `MM_CHARGE_MODEL = 'point'` passes `radii=None` to PySCF. Gaussian charges use covalent radii; point charges have no artificial Gaussian radius.
 
 #### Select quantum nuclei in CNEO calculations
 Two parameters are used to select quantum nuclei in CNEO calculations
@@ -90,6 +93,41 @@ Link atoms are used in our implementation to saturate the QM system when there a
  * In GROMACS, all bonds consisting of 2 QM atoms, angles and settles containing 2 or 3 QM atoms, and dihedrals containing 3 or 4 QM atoms, are all excluded from the forcefield evaluation. [^7]
  * The force on a link atoms is partitioned to the two atoms of the crossing bond. [^4][^6]
 
+
+## SCF Guess Prediction During MD
+
+Both example directories contain the same `pyscfdriver.py`. Edit the driver in the directory from which GROMACS runs. The driver settings remain authoritative for the electronic method, charge, multiplicity, and basis sets.
+
+Prediction is disabled by default. For fixed-timestep MD, enable it with:
+
+```python
+MD_EXTRAPOLATION = True
+USE_GPU = True
+```
+
+`True` selects projected Grassmann extrapolation with four history snapshots. `USE_GPU` is independent and defaults to `False`. A method name or an options dictionary selects another predictor:
+
+```python
+MD_EXTRAPOLATION = 'aspc'
+# Or:
+MD_EXTRAPOLATION = dict(scheme='aspc', history_length=6)
+```
+
+The default projected G-Ext predictor fits historical AO overlap matrices to the current overlap and applies the fitted weights to occupied-space projectors. The formulation is described by Wilhelm et al., Sec. X.2.1, Eq. 100, DOI: https://doi.org/10.48550/arXiv.2607.22916. The implementation follows CP2K's `wfi_gext_proj_nr` and `diff_fitting` in `src/qs_wf_history_methods.F`, pinned at https://github.com/cp2k/cp2k/blob/dfe8787b4f0a22da8e73e9abe2b384fa021d2f53/src/qs_wf_history_methods.F. Four history snapshots are a benchmark-selected default for this implementation.
+
+This requires a PySCF installation providing `pyscf.neo.extrapolation`. GROMACS retains the imported Python module between force evaluations, so history stays in memory. Restarting GROMACS starts with empty history. Call `reset_extrapolation()` when starting an unrelated trajectory within the same Python process. Skipped or backward step numbers clear the history automatically. Repeating a step at changed QM coordinates also clears it with a warning.
+
+Keep `MD_EXTRAPOLATION = False` for geometry optimization: these predictors assume a fixed-timestep trajectory. Each force evaluation constructs a fresh QM/MM object; prediction supplies its initial density without using a QM/MM scanner. Failed SCF convergence raises an error before forces are returned. `SCF_CONV_TOL`, `SCF_CONV_TOL_GRAD`, and `SCF_MAX_CYCLE` control convergence independently of prediction.
+
+For CNEO density fitting, `DFT_DF_NE` and `DFT_DF_NN` explicitly select the intercomponent fitting treatments. Enabling `DFT_DF_NN` requires both `DFT_DF` and `DFT_DF_NE`. `QM_NUC_INDEX` contains zero-based positions in the QM atom list; custom selections must identify hydrogen atoms and exclude link atoms. Automatic selection excludes link atoms and leaves the configured index list unchanged between calls.
+
+### Timing Records
+
+`PRINT_TIMING = True` prints a JSON timing record for each completed CNEO or DFT force evaluation. Set `TIMING_FILE = 'qmmm-timing.jsonl'` to also append one record per line to a file. Each record contains the GROMACS step, method, CPU/GPU backend, energy in Hartree, convergence flag, SCF cycle count, and SCF and gradient wall times in seconds. Repeated evaluations at the same step produce separate records.
+
+The SCF timer includes density prediction and the SCF kernel; construction of the molecule and SCF object precedes it. The gradient timer includes QM and MM gradients. GPU timers synchronize the current stream at section boundaries. Cycle counts come from `mf.cycles`, which counts the main SCF iterations. Timing records contain diagnostics and do not store prediction history.
+
+Conventional GPU DFT QM/MM supports point charges in this driver. Gaussian MM charges remain available through the CPU conventional DFT path and the CNEO paths. DFTB+ is imported only when the DFTB method is selected.
 
 ## References
 

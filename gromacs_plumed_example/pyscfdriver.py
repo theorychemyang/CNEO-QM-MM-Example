@@ -1,6 +1,9 @@
 import numpy as np
 import time, copy, os, warnings
-import psutil
+import resource
+import json
+from functools import reduce
+from operator import index as integer_index
 try:
     import cupy as cp
     HAVE_GPU = True
@@ -11,7 +14,158 @@ from pyscf.qmmm import itrf
 from pyscf.data import elements, radii, nist
 from pyscf.qmmm.mm_mole import create_mm_mol
 from collections import defaultdict
-import dftbplus
+# Enable SCF-guess prediction only for fixed-timestep MD:
+# True selects projected G-Ext with four snapshots; 'aspc' selects ASPC.
+# Projected G-Ext fits historical AO overlaps and applies the fitted weights
+# to occupied-space projectors. Method: Wilhelm et al., Sec. X.2.1,
+# Eq. 100, doi:10.48550/arXiv.2607.22916. Implementation follows CP2K's
+# wfi_gext_proj_nr in src/qs_wf_history_methods.F at revision
+# dfe8787b4f0a22da8e73e9abe2b384fa021d2f53:
+# https://github.com/cp2k/cp2k/blob/dfe8787b4f0a22da8e73e9abe2b384fa021d2f53/src/qs_wf_history_methods.F
+# Four snapshots are a benchmark-selected default for this implementation.
+# A dict exposes predictor options, e.g. dict(scheme='aspc', history_length=6).
+# Leave this False for geometry optimization. GROMACS keeps history in this
+# imported module; restarting GROMACS starts a fresh history in memory.
+MD_EXTRAPOLATION = False
+USE_GPU = False
+SCF_CONV_TOL = 1e-9
+SCF_CONV_TOL_GRAD = None
+SCF_MAX_CYCLE = 50
+# Print one timing record per force evaluation. Set a JSONL path to also
+# append records to disk; this file contains diagnostics only.
+PRINT_TIMING = True
+TIMING_FILE = None
+_extrapolator = None
+_extrapolation_options = None
+
+
+def reset_extrapolation():
+    """Start a new MD prediction history after restarting or changing runs."""
+    global _extrapolator, _extrapolation_options
+    _extrapolator = None
+    _extrapolation_options = None
+
+
+def run_scf_extrapolation(mf, step):
+    """Apply driver settings and manage the history retained between GROMACS calls."""
+    global _extrapolator, _extrapolation_options
+    # GROMACS retains this imported module across force calls. Each call
+    # supplies a fresh SCF object with the current QM and MM coordinates.
+    if isinstance(step, (bool, np.bool_)):
+        raise ValueError('gmxstep must be an integer MD step number')
+    step = integer_index(step)
+    option = MD_EXTRAPOLATION
+    if option is None or option is False:
+        options = None
+    elif option is True:
+        options = {}
+    elif isinstance(option, str):
+        options = dict(scheme=option.lower())
+    elif isinstance(option, dict):
+        options = option.copy()
+    else:
+        raise ValueError('MD_EXTRAPOLATION must be False, True, a method name, or a dict')
+    mf.conv_tol = SCF_CONV_TOL
+    mf.conv_tol_grad = SCF_CONV_TOL_GRAD
+    mf.max_cycle = SCF_MAX_CYCLE
+    if DFT_DF_NN and not (DFT_DF and DFT_DF_NE):
+        raise ValueError('DFT_DF_NN requires DFT_DF=True and DFT_DF_NE=True')
+    try:
+        scf_start = wall_time()
+        if options is None or step < 0:
+            reset_extrapolation()
+            energy = mf.kernel()
+        else:
+            from pyscf.neo.extrapolation import Extrapolator
+            if _extrapolator is None or options != _extrapolation_options:
+                _extrapolator = Extrapolator(**options)
+                _extrapolation_options = options
+            last = _extrapolator.last_step
+            if last is not None and (step < last or step > last+1):
+                _extrapolator.clear()
+            if (step == _extrapolator.last_step and
+                not np.array_equal(mf.mol.atom_coords(), _extrapolator.last_coords)):
+                warnings.warn('QM coordinates changed within one MD step; restarting SCF history',
+                              RuntimeWarning)
+                _extrapolator.clear()
+            dm0 = _extrapolator.predict(mf, mf.mol, step)
+            with _extrapolator.record_fock(mf):
+                energy = mf.kernel(dm0=dm0)
+        scf_seconds = wall_time() - scf_start
+        energy = float(energy)
+        if not mf.converged or not np.isfinite(energy):
+            raise RuntimeError(f'SCF failed at GROMACS step {step}; forces were not evaluated')
+        if _extrapolator is not None:
+            _extrapolator.update(mf, step)
+    except Exception:
+        reset_extrapolation()
+        raise
+    return energy, scf_seconds
+
+
+def wall_time():
+    # GPU kernels finish asynchronously; synchronize the current stream at
+    # section boundaries so wall times include the completed calculation.
+    if USE_GPU:
+        cp.cuda.get_current_stream().synchronize()
+    return time.perf_counter()
+
+
+def record_timing(mf, step, scf_seconds, grad_seconds):
+    """Record one completed SCF and its QM/MM force evaluation, in seconds."""
+    record = dict(step=integer_index(step), method=QM_METHOD,
+                  backend='GPU' if USE_GPU else 'CPU', energy=float(mf.e_tot),
+                  converged=bool(mf.converged), scf_cycles=int(mf.cycles),
+                  scf_seconds=scf_seconds, grad_seconds=grad_seconds)
+    line = json.dumps(record, allow_nan=False)
+    if PRINT_TIMING:
+        print('SCF/gradient: ' + line, flush=True)
+    if TIMING_FILE is not None:
+        with open(TIMING_FILE, 'a') as output:
+            output.write(line + '\n')
+
+
+def prepare_qmatoms(kinds, coords, indices=None):
+    """Build an independent atom list and select zero-based QM nuclear indices."""
+    if len(kinds) != len(coords):
+        raise ValueError('QM element and coordinate counts differ')
+    coordinates = np.asarray(coords, dtype=float)
+    if coordinates.shape != (len(kinds), 3) or not np.isfinite(coordinates).all():
+        raise ValueError('QM coordinates must be a finite (number of QM atoms, 3) array in Angstrom')
+    qmatoms = [[kind.strip(), *coord.tolist()] for kind, coord in zip(kinds, coordinates)]
+    if QM_METHOD.lower() != 'cneo':
+        return qmatoms, []
+    selection = QM_NUC_SELECT.lower()
+    if selection == 'all':
+        selected = [i for i, kind in enumerate(kinds)
+                    if kind.strip().upper() == 'H' and
+                    (indices is None or not str(indices[i]).startswith('L'))]
+    elif selection == 'custom':
+        if any(isinstance(i, (bool, np.bool_)) for i in QM_NUC_INDEX):
+            raise ValueError('QM_NUC_INDEX must contain integer QM-local indices')
+        selected = [integer_index(i) for i in QM_NUC_INDEX]
+        if len(set(selected)) != len(selected):
+            raise ValueError('QM_NUC_INDEX contains duplicate indices')
+        for i in selected:
+            if i < 0 or i >= len(kinds) or kinds[i].strip().upper() != 'H':
+                raise ValueError('QM_NUC_INDEX must contain zero-based QM-local hydrogen indices')
+            if indices is not None and str(indices[i]).startswith('L'):
+                raise ValueError('Link atoms must remain classical nuclei')
+    else:
+        raise ValueError("QM_NUC_SELECT must be 'all' or 'custom'")
+    for i in selected:
+        qmatoms[i][0] = 'H~'
+    return qmatoms, selected
+
+
+def force_array(value, count):
+    """Return the contiguous float64 CPU force buffer read by GROMACS."""
+    if hasattr(value, 'get'):
+        value = value.get()
+    value = np.asarray(value, dtype=np.float64, order='C')
+    if value.shape != (count, 3) or not np.isfinite(value).all():
+        raise RuntimeError(f'Expected finite forces with shape ({count}, 3), got {value.shape}')
+    return value
 
 # DEBUG = True
 SYSTEM_CHARGE = 0
@@ -20,17 +174,18 @@ QM_MULT = 1
 QM_METHOD = 'cneo'
 # select from {'cneo', 'dft', 'export': for export qm and mm xyz files }
 # export options: uses EXPORT_QM_FNAME and EXPORT_MM_FNAME to specify the output file names, optional
-QM_E_BASIS = 'aug-cc-pvdz'
+QM_E_BASIS = 'def2-svp'
 DFT_E_XC = 'B3LYP'
 QM_NUC_BASIS = 'pb4d'
 QM_NUC_SELECT = 'all' # select from {'all', 'custom'}
 QM_NUC_INDEX = []
 DFT_DF = True
-DFT_DF_NE = False
-QM_E_BASIS_AUX = 'aug-cc-pvdz-ri'
+DFT_DF_NE = True
+DFT_DF_NN = True
+QM_E_BASIS_AUX = 'def2-svp-jkfit'
 MM_CHARGE_MODEL = 'point' # select from {'point', 'gaussian'}
-QMMM_CUT = 5 # Angstrom
-QMMM_SWITCH = 3
+QMMM_CUT = None # None includes all supplied MM charges; finite distances are in Angstrom
+QMMM_SWITCH = 3 # Start tapering MM charges here when QMMM_CUT is finite
 
 LINK_CHARGE_CORR_METHOD = 'global' # select from {'global', 'local', 'delete'}
 LINK_MMHOST_NEIGHBOR_RANGE = 1.7
@@ -47,10 +202,9 @@ EXPORT_MM_FNAME = 'mm.xyz'
 
 def print_memory_usage(step, point):
     # CPU memory
-    process = psutil.Process()
-    cpu_memory_mb = process.memory_info().rss / 1024 / 1024
+    cpu_memory_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
-    memory_str = f"Step {step}, {point}:\n  CPU Memory: {cpu_memory_mb:.1f} MB"
+    memory_str = f"Step {step}, {point}:\n  Peak CPU Memory: {cpu_memory_mb:.1f} MB"
 
     # GPU memory if available
     if HAVE_GPU:
@@ -59,10 +213,6 @@ def print_memory_usage(step, point):
             gpu_cached_mb = cp.get_default_memory_pool().total_bytes() / 1024 / 1024
             memory_str += f"\n  GPU Memory: {gpu_memory_mb:.1f} MB (Cached: {gpu_cached_mb:.1f} MB)"
 
-            # Print pinned memory if used
-            pinned_memory_mb = cp.get_default_pinned_memory_pool().used_bytes() / 1024 / 1024
-            if pinned_memory_mb > 0:
-                memory_str += f"\n  Pinned Memory: {pinned_memory_mb:.1f} MB"
         except:
             memory_str += "\n  GPU memory query failed"
 
@@ -83,6 +233,17 @@ def qmmmCalc(
     mmcoords,
     links,
 ):
+    if QMMM_CUT is not None:
+        if not np.isfinite(QMMM_CUT) or not 0 <= QMMM_SWITCH < QMMM_CUT:
+            raise ValueError('Require 0 <= QMMM_SWITCH < finite QMMM_CUT, or QMMM_CUT=None')
+        warnings.warn('Finite QMMM_CUT scales MM charges with distance; forces omit '
+                      'derivatives of this scaling. Use QMMM_CUT=None for MD.', RuntimeWarning)
+    if MM_CHARGE_MODEL.lower() != 'point' and not MM_CHARGE_MODEL.lower().startswith('gauss'):
+        raise ValueError("MM_CHARGE_MODEL must be 'point' or 'gaussian'")
+    if len(qmindex) != len(qmkinds) or len(qmkinds) != len(qmcoords):
+        raise ValueError('QM indices, elements and coordinate counts differ')
+    if not len(mmindex) == len(mmkinds) == len(mmcharges) == len(mmcoords):
+        raise ValueError('MM indices, elements, charges and coordinate counts differ')
     print(f"gmxstep is {gmxstep}")
     print_memory_usage(gmxstep, "start of qmmmCalc")
     t0 = time.time()
@@ -106,31 +267,7 @@ def qmmmCalc(
         scale0=LINK_COORD_SCALE,
     )
 
-    # Generate qmatoms list for pyscf input
-    # make a list of H atoms in the qm atoms.
-    qmatoms = []
-    qmlocalindex = 0
-    if QM_METHOD == 'cneo':
-        print("CNEO method selected for QM calculation. ", end= '')
-        if QM_NUC_SELECT == 'custom':
-            print(f"User defined quantized nuclei list: {QM_NUC_INDEX}.")
-            qmnucindex = QM_NUC_INDEX
-        elif QM_NUC_SELECT == 'all':
-            print("all non-link atom hydrogen atoms will be quantized.")
-            qmnucindex = []
-
-    for index, kind, coord in zip(qmindex_link, qmkinds_link, qmcoords_link):
-        qmatom = [kind] + coord
-        qmatoms.append(qmatom)
-        qmnucindex = QM_NUC_INDEX
-        if kind.strip().upper() == 'H':
-            if QM_NUC_SELECT =='custom':
-                if qmlocalindex in qmnucindex:
-                    qmatoms[qmlocalindex][0] = 'H~'
-            if QM_NUC_SELECT == 'all' and str(index)[0] != 'L':
-                qmatoms[qmlocalindex][0] = 'H~'
-                qmnucindex.append(qmlocalindex)
-        qmlocalindex = qmlocalindex + 1
+    qmatoms, qmnucindex = prepare_qmatoms(qmkinds_link, qmcoords_link, qmindex_link)
     # Generate the list of quantum nuclei for CNEO or NEO calculation.
     # The last (# of links H atoms) are link atoms, therefore should be
     # removed from the list of quantum nuclei for CNEO calculation
@@ -151,23 +288,25 @@ def qmmmCalc(
             mmkinds=mmkinds,
             mmneighbor_thrsh=LINK_MMHOST_NEIGHBOR_RANGE)
 
-    mmindex_incut = np.array([], dtype=int)
-    mmdist = defaultdict(list)
-    # mmdist = set()
-    for qmindex_, qmkind, qmcoord in zip(qmindex, qmkinds, qmcoords):
-        # print(f"{qmindex_=} {qmkind=} {qmcoord=}")
-        for mmindex_, mmcoord in enumerate(mmcoords):
-            # print(f"{mmindex_=} {mmcoord=}")
-            dist = lib.norm(qmcoord - np.array(mmcoord))
-            if dist <= QMMM_CUT:
-                switch_factor = switch(dist, QMMM_SWITCH, QMMM_CUT)
-                charge_switched = mmcharges[mmindex_] * switch_factor
-                # charge_old = mmdist[mmindex_][2]
-                mmkind = mmkinds[mmindex_]
-                if mmindex_ not in mmdist:
-                    mmdist[mmindex_] = [qmindex_, mmkind, dist, switch_factor, charge_switched]
-                elif mmdist[mmindex_][2] > dist:
-                    mmdist[mmindex_] = [qmindex_, mmkind, dist, switch_factor, charge_switched]
+    if QMMM_CUT is None:
+        mmdist = {i: [None, kind, None, 1., charge]
+                  for i, (kind, charge) in enumerate(zip(mmkinds, mmcharges))}
+    else:
+        mmdist = defaultdict(list)
+        for qmindex_, qmkind, qmcoord in zip(qmindex, qmkinds, qmcoords):
+            # print(f"{qmindex_=} {qmkind=} {qmcoord=}")
+            for mmindex_, mmcoord in enumerate(mmcoords):
+                # print(f"{mmindex_=} {mmcoord=}")
+                dist = lib.norm(qmcoord - np.array(mmcoord))
+                if dist <= QMMM_CUT:
+                    switch_factor = switch(dist, QMMM_SWITCH, QMMM_CUT)
+                    charge_switched = mmcharges[mmindex_] * switch_factor
+                    # charge_old = mmdist[mmindex_][2]
+                    mmkind = mmkinds[mmindex_]
+                    if mmindex_ not in mmdist:
+                        mmdist[mmindex_] = [qmindex_, mmkind, dist, switch_factor, charge_switched]
+                    elif mmdist[mmindex_][2] > dist:
+                        mmdist[mmindex_] = [qmindex_, mmkind, dist, switch_factor, charge_switched]
     # mmindex_incut = np.array(sorted(list(set(mmdist.keys()))))
     mmkinds_incut, mmcharges_incut, mmcoords_incut, mmindex_incut = [], [], [], []
     for i, mmindex_ in enumerate(sorted(mmdist.keys())):
@@ -180,23 +319,19 @@ def qmmmCalc(
         mmindex_incut.append(mmindex_)
     mmkinds_incut = np.array(mmkinds_incut)
     mmcharges_incut = np.array(mmcharges_incut)
-    mmcoords_incut = np.array(mmcoords_incut)
-    mmindex_incut = np.array(mmindex_incut)
+    mmcoords_incut = np.asarray(mmcoords_incut, dtype=float).reshape(-1, 3)
+    mmindex_incut = np.asarray(mmindex_incut, dtype=int)
 
     # mmkinds_incut = np.array(mmkinds)[mmindex_incut]
     # mmcharges_incut = np.array(mmcharges)[mmindex_incut]
     # mmcoords_incut = np.array(mmcoords)[mmindex_incut]
 
-    # MM charge model: Gaussian charge or point charge. Point
-    # charge model for MM atoms is just Gaussian charge
-    # model with exceptionally short radii: 1e-8 Bohr.
-    mmradii = []
-    for kind in mmkinds_incut:
-        charge = elements.charge(kind)
-        if MM_CHARGE_MODEL.lower()[0:5] == 'gauss':
-            mmradii.append(radii.COVALENT[charge] * nist.BOHR)
-        if MM_CHARGE_MODEL.lower() == 'point':
-            mmradii.append(1e-8 * nist.BOHR)
+    # PySCF selects point charges when radii=None; supplying radii selects
+    # normalized Gaussian charge distributions.
+    mmradii = None
+    if MM_CHARGE_MODEL.lower().startswith('gauss'):
+        mmradii = [radii.COVALENT[elements.charge(kind)] * nist.BOHR
+                   for kind in mmkinds_incut]
 
     if QMMM_PRINT:
         print("qm nuc index:", QM_NUC_INDEX)
@@ -214,11 +349,12 @@ def qmmmCalc(
 
     if QM_METHOD.upper() == 'CNEO':
         [energy, qmforces, mmforces_incut] = qmmmCalc_cneo(
-            qmatoms, mmcoords_incut, mmcharges_incut, mmradii, qmnucindex=qmnucindex
+            qmatoms, mmcoords_incut, mmcharges_incut, mmradii, qmnucindex=qmnucindex,
+            gmxstep=gmxstep
         )
     elif QM_METHOD.upper() == 'DFT':
         [energy, qmforces, mmforces_incut] = qmmmCalc_dft(
-            qmatoms, mmcoords_incut, mmcharges_incut, mmradii
+            qmatoms, mmcoords_incut, mmcharges_incut, mmradii, gmxstep=gmxstep
         )
     elif QM_METHOD.upper() == 'MULLIKEN':
         [energy, qmforces, mmforces_incut] = qmmmCalc_mulliken(
@@ -233,6 +369,8 @@ def qmmmCalc(
                 f.write(str(len(qmatoms))+"\nfake QM xyz\n")
                 for i in range(len(qmatoms)):
                     f.write(f"{qmatoms[i][0]} {0.0} {0.0} {0.0}\n")
+        [energy, qmforces, mmforces_incut] = qmmmCalc_dftb(
+            qmcoords_link, mmcoords_incut, mmcharges_incut)
     elif QM_METHOD.upper() == 'EXPORT':
         try:
             qmCalc_export(qmatoms, mmkinds_incut, mmcoords_incut, mmcharges_incut,
@@ -241,7 +379,11 @@ def qmmmCalc(
             qmCalc_export(qmatoms, mmkinds_incut, mmcoords_incut, mmcharges_incut)
         [energy, qmforces, mmforces_incut] = qmmmCalc_dftb(
             qmcoords_link, mmcoords_incut, mmcharges_incut)
+    else:
+        raise ValueError(f'Unknown QM_METHOD: {QM_METHOD}')
 
+    qmforces = force_array(qmforces, len(qmatoms))
+    mmforces_incut = force_array(mmforces_incut, len(mmindex_incut))
     mmforces = np.zeros((len(mmindex), 3))
     mmforces[mmindex_incut] = mmforces_incut
 
@@ -272,43 +414,22 @@ def qmCalc(gmxstep, qmbasis, qmmult, qmcharge, qmkinds, qmcoords):
     if gmxstep == 0 or gmxstep == -1:
         prop_print_xzy("QM atoms", qmindex_pyscf, qmkinds, qmcoords)
 
-    qmatoms = []
-    if QM_METHOD == 'cneo':
-        print("CNEO method selected for QM calculation. ", end= '')
-        if QM_NUC_SELECT == 'custom':
-            print(f"User defined quantized nuclei list: {QM_NUC_INDEX}.")
-            qmnucindex = QM_NUC_INDEX
-        elif QM_NUC_SELECT == 'all':
-            print("All hydrogen atoms will be quantized.")
-            qmnucindex = []
-
-    # The default option is quantizing all protons in CNEO.
-    # The user can customize quantized protons by modifying the list qmnucindex.
-    qmlocalindex = 0
-    for kind, coord in zip(qmkinds, qmcoords):
-        qmatom = [kind] + coord
-        qmatoms.append(qmatom)
-        if kind.strip().upper() == 'H':
-            if QM_NUC_SELECT =='custom':
-                if qmlocalindex in qmnucindex:
-                    qmatoms[qmlocalindex][0] = 'H~'
-            if QM_NUC_SELECT == 'all':
-                qmatoms[qmlocalindex][0] = 'H~'
-                qmnucindex.append(qmlocalindex)
-        qmlocalindex = qmlocalindex + 1
+    qmatoms, qmnucindex = prepare_qmatoms(qmkinds, qmcoords)
 
     if QM_METHOD.upper() == 'CNEO':
-        [energy, qmforces] = qmCalc_cneo(qmatoms, qmnucindex=qmnucindex)
+        [energy, qmforces] = qmCalc_cneo(qmatoms, qmnucindex=qmnucindex, gmxstep=gmxstep)
     elif QM_METHOD.upper() == 'DFT':
-        [energy, qmforces] = qmCalc_dft(qmatoms)
+        [energy, qmforces] = qmCalc_dft(qmatoms, gmxstep=gmxstep)
+    else:
+        raise ValueError('Pure-QM calculations support QM_METHOD cneo or dft')
 
     print(f"time for this step = {time.time() - t0} seconds")
     print_memory_usage(gmxstep, "end of qmCalc")
 
-    return energy, qmforces
+    return energy, force_array(qmforces, len(qmatoms))
 
 
-def qmCalc_cneo(qmatoms, qmnucindex):
+def qmCalc_cneo(qmatoms, qmnucindex, gmxstep=0):
     mol = neo.M(
         atom=qmatoms,
         basis=QM_E_BASIS,
@@ -317,45 +438,52 @@ def qmCalc_cneo(qmatoms, qmnucindex):
         charge=QM_CHARGE,
         spin=QM_MULT-1
     )
+    mf = neo.CDFT(mol, xc=DFT_E_XC)
     if DFT_DF:
-        if DFT_DF_NE:
-            mf = neo.CDFT(mol, xc=DFT_E_XC).density_fit(auxbasis=QM_E_BASIS_AUX, df_ne=True)
-        else:
-            mf = neo.CDFT(mol, xc=DFT_E_XC).density_fit(auxbasis=QM_E_BASIS_AUX)
-    else:
-        mf = neo.CDFT(mol, xc=DFT_E_XC)
+        mf = mf.density_fit(auxbasis=QM_E_BASIS_AUX, df_ne=DFT_DF_NE, df_nn=DFT_DF_NN)
+    if USE_GPU:
+        mf = mf.to_gpu()
     # mf.mf_elec.xc = DFT_E_XC
 
-    energy = mf.kernel()
+    energy, scf_seconds = run_scf_extrapolation(mf, gmxstep)
+    grad_start = wall_time()
 
     g = mf.Gradients()
     g_qm = g.grad()
     qmforce = -g_qm
+    record_timing(mf, gmxstep, scf_seconds, wall_time() - grad_start)
     return energy, qmforce
 
 
-def qmCalc_dft(qmatoms):
+def qmCalc_dft(qmatoms, gmxstep=0):
     mol = gto.M(atom=qmatoms,
                 unit='ANG',
                 basis=QM_E_BASIS,
                 charge=QM_CHARGE,
                 spin=QM_MULT-1)
-    mf = dft.RKS(mol)
+    mf = dft.UKS(mol) if mol.spin else dft.RKS(mol)
     mf.xc = DFT_E_XC
     if DFT_DF:
         mf = mf.density_fit(auxbasis=QM_E_BASIS_AUX)
+    if USE_GPU:
+        mf = mf.to_gpu()
 
-    energy = mf.kernel()
+    energy, scf_seconds = run_scf_extrapolation(mf, gmxstep)
+    grad_start = wall_time()
     # dm = mf.make_rdm1()
 
     qmgrad = mf.nuc_grad_method().kernel()
     qmforce = -qmgrad
+    record_timing(mf, gmxstep, scf_seconds, wall_time() - grad_start)
     return energy, qmforce
 
 
-def qmmmCalc_cneo(qmatoms, mmcoords, mmcharges, mmradii, qmnucindex):
+def qmmmCalc_cneo(qmatoms, mmcoords, mmcharges, mmradii, qmnucindex, gmxstep=0):
 
     t0 = time.time()
+    if len(mmcharges) == 0:
+        energy, qmforces = qmCalc_cneo(qmatoms, qmnucindex, gmxstep)
+        return energy, qmforces, np.empty((0, 3))
 
     mmmol = create_mm_mol(mmcoords, mmcharges, mmradii)
     mol_neo = neo.M(
@@ -372,15 +500,14 @@ def qmmmCalc_cneo(qmatoms, mmcoords, mmcharges, mmradii, qmnucindex):
     # energy
     print("mol_neo quantum_nuc", mol_neo._quantum_nuc)
     # print(qmatoms)
+    mf = neo.CDFT(mol_neo, xc=DFT_E_XC)
     if DFT_DF:
-        if DFT_DF_NE:
-            mf = neo.CDFT(mol_neo, xc=DFT_E_XC).density_fit(auxbasis=QM_E_BASIS_AUX, df_ne=True)
-        else:
-            mf = neo.CDFT(mol_neo, xc=DFT_E_XC).density_fit(auxbasis=QM_E_BASIS_AUX)
-    else:
-        mf = neo.CDFT(mol_neo, xc=DFT_E_XC)
+        mf = mf.density_fit(auxbasis=QM_E_BASIS_AUX, df_ne=DFT_DF_NE, df_nn=DFT_DF_NN)
+    if USE_GPU:
+        mf = mf.to_gpu()
     # mf.mf_elec.xc = DFT_E_XC
-    energy = mf.kernel()
+    energy, scf_seconds = run_scf_extrapolation(mf, gmxstep)
+    grad_start = wall_time()
     te = time.time()
     print(f"time for energy = {te - t0} seconds")
 
@@ -394,28 +521,40 @@ def qmmmCalc_cneo(qmatoms, mmcoords, mmcharges, mmradii, qmnucindex):
     # mm gradient
     g_mm = g.grad_mm()
     mmforces = -g_mm
+    record_timing(mf, gmxstep, scf_seconds, wall_time() - grad_start)
     tmf = time.time()
     print(f"time for mm force = {tmf - tqf} seconds")
 
     return energy, qmforces, mmforces
 
 
-def qmmmCalc_dft(qmatoms, mmcoords, mmcharges, mmradii):
+def qmmmCalc_dft(qmatoms, mmcoords, mmcharges, mmradii, gmxstep=0):
     t0 = time.time()
+    if len(mmcharges) == 0:
+        energy, qmforces = qmCalc_dft(qmatoms, gmxstep)
+        return energy, qmforces, np.empty((0, 3))
 
     mol = gto.M(atom=qmatoms,
                 unit='ANG',
                 basis=QM_E_BASIS,
                 charge=QM_CHARGE,
                 spin=QM_MULT-1)
-    mf_dft = dft.RKS(mol)
+    mf_dft = dft.UKS(mol) if mol.spin else dft.RKS(mol)
     mf_dft.xc = DFT_E_XC
 
     if DFT_DF:
         mf_dft = mf_dft.density_fit(auxbasis=QM_E_BASIS_AUX)
-    mf = itrf.mm_charge(mf_dft, mmcoords, mmcharges, mmradii)
+    if USE_GPU:
+        if MM_CHARGE_MODEL.lower() != 'point':
+            raise NotImplementedError('Conventional GPU DFT QM/MM currently requires point charges')
+        from gpu4pyscf.qmmm import itrf as gpu_itrf
+        mf = gpu_itrf.mm_charge(mf_dft.to_gpu(), mmcoords, mmcharges)
+    else:
+        mf = itrf.mm_charge(mf_dft, mmcoords, mmcharges,
+                            None if MM_CHARGE_MODEL.lower() == 'point' else mmradii)
 
-    energy = mf.kernel()
+    energy, scf_seconds = run_scf_extrapolation(mf, gmxstep)
+    grad_start = wall_time()
     te = time.time()
     # print(f"time for energy = {te - t0} seconds")
 
@@ -428,6 +567,7 @@ def qmmmCalc_dft(qmatoms, mmcoords, mmcharges, mmradii):
     mmforces_qmnuc = -mf_grad.grad_nuc_mm()
     mmforces_qme = -mf_grad.grad_hcore_mm(dm)
     mmforces = mmforces_qmnuc + mmforces_qme
+    record_timing(mf, gmxstep, scf_seconds, wall_time() - grad_start)
     tmf = time.time()
     # print(f"time for mm force = {tmf - tqf} seconds")
     # print(f"time for this step = {time.time() - t0} seconds")
@@ -467,6 +607,7 @@ def qmmmCalc_mulliken(qmatoms, mmcoords, mmcharges, mmradii):
     return energy, qmforces, mmforces
 
 def qmmmCalc_dftb(qmcoords, mmcoords, mmcharges):
+    import dftbplus
     qmcoords = np.array(qmcoords) / 0.529177249 # AA to Bohr
     mmcoords = np.array(mmcoords) / 0.529177249 # AA to Bohr
     dr = mmcoords[:,None,:] - qmcoords
